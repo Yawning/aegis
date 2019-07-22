@@ -11,9 +11,7 @@ send patches or use [ChaCha20/Poly1305][3] or [Deoxys-II][4].
 #### Notes
 
 Performance is quite good, handily outperforming GCM-AES128 under most
-conditions.  Authenticated decryption for tiny (approx 8 bytes) is marginally
-slower than the runtime library's GCM-AES128 implementation, due to the use
-of `subtle.ConstantTimeCompare`.
+conditions.
 
 The gratuitous use of AVX is due to VEX coding being more pleasant to work
 with, especially when implementing the `StateUpdate128(S_i, m_i)` function.

@@ -18,8 +18,6 @@
 package hardware
 
 import (
-	"crypto/subtle"
-
 	"golang.org/x/sys/cpu"
 
 	"gitlab.com/yawning/aegis.git/internal/api"
@@ -30,7 +28,7 @@ import (
 func sealAVX2(constant, key, nonce *byte, dst, plaintext, additionalData []byte)
 
 //go:noescape
-func openAVX2(constant, key, nonce *byte, dst, ciphertext, additionalData []byte, tag *byte)
+func openAVX2(constant, key, nonce *byte, dst, ciphertext, additionalData []byte, tagOk *bool)
 
 type aesniFactory struct{}
 
@@ -67,16 +65,10 @@ func (inst *aesniInstance) Open(dst, nonce, ciphertext, additionalData []byte) (
 	ptLen := len(ciphertext) - api.BlockSize
 	ret, out := slice.ForAppend(dst, ptLen)
 
-	var tagCmp [api.BlockSize]byte
-	openAVX2(&api.Const[0], &inst.key[0], &nonce[0], out, ciphertext, additionalData, &tagCmp[0])
+	var tagOk bool
+	openAVX2(&api.Const[0], &inst.key[0], &nonce[0], out, ciphertext, additionalData, &tagOk)
 
-	// Note: subtle.ConstantTimeCompare is kind of slow, this could use
-	// something like VPCMPEQD, VPMOVMSKB, CMP to improve small message
-	// performance.
-	//
-	// This is easier to read and AEGIS-128 still shits all over GCM-AES128,
-	// so opt for maintainability for now.
-	return ret, subtle.ConstantTimeCompare(ciphertext[ptLen:], tagCmp[:]) == 1
+	return ret, tagOk
 }
 
 func init() {

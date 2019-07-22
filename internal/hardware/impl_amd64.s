@@ -73,30 +73,31 @@
 //  * function args: additionalData
 //  * S_i:           X0, ..., X4
 #define process_ad() \
-	MOVQ additionalData+72(FP), R15 \ // &additionalData[0]
-	MOVQ additionalData+80(FP), R14 \ // len(additionalData)
-	MOVQ           R14, AX          \
-	SHRQ           $4, AX           \
-	JZ             absorbPartial    \
-	loopAbsorb:                     \
-	VMOVDQU        (R15), X5        \
-	state_update(X5)                \ // S_(i+1) = StateUpdate128(S_i, AD_i)
-	ADDQ           $16, R15         \
-	SUBQ           $1, AX           \
-	JNZ            loopAbsorb       \
-	absorbPartial:                  \
-	ANDQ           $15, R14         \ // Like `loopAbsorb` but the trailing partial block is padded with 0 bits.
-	JZ             absorbDone       \
-	VPXOR          X5, X5, X5       \
-	VMOVDQU        X5, (BP)         \
-	copy(BP, R15, R14)              \
-	VMOVDQU        (BP), X5         \
-	state_update(X5)                \
+	MOVQ           additionalData+72(FP), R15 \ // &additionalData[0]
+	MOVQ           additionalData+80(FP), R14 \ // len(additionalData)
+	MOVQ           R14, AX                    \
+	SHRQ           $4, AX                     \
+	JZ             absorbPartial              \
+	loopAbsorb:                               \
+	VMOVDQU        (R15), X5                  \
+	state_update(X5)                          \ // S_(i+1) = StateUpdate128(S_i, AD_i)
+	ADDQ           $16, R15                   \
+	SUBQ           $1, AX                     \
+	JNZ            loopAbsorb                 \
+	absorbPartial:                            \
+	ANDQ           $15, R14                   \ // Like `loopAbsorb` but the trailing partial block is padded with 0 bits.
+	JZ             absorbDone                 \
+	VPXOR          X5, X5, X5                 \
+	VMOVDQU        X5, (BP)                   \
+	copy(BP, R15, R14)                        \
+	VMOVDQU        (BP), X5                   \
+	state_update(X5)                          \
 	absorbDone:
 
 // 2.3.5 The finalization of AEGIS-128
-//  * S_i:           X0, ..., X4
-#define finalize(dst, adlen, msglen) \
+//  * S_i: X0, ..., X4
+//  * Tag: X0
+#define finalize(adlen, msglen) \
 	SHLQ    $3, adlen     \
 	SHLQ    $3, msglen    \
 	MOVQ    adlen, (BP)   \
@@ -115,9 +116,7 @@
 	VPXOR   X0, X1, X0    \ // T = S_(u+v+7,0) ^ ... ^ S_(u+v+7, 4)
 	VPXOR   X0, X2, X0    \
 	VPXOR   X0, X3, X0    \
-	VPXOR   X0, X4, X0    \
-	                      \
-	VMOVDQU X0, (dst)
+	VPXOR   X0, X4, X0
 
 // func sealAVX2(constant, key, nonce *byte, dst, plaintext, additionalData []byte)
 TEXT ·sealAVX2(SB), NOSPLIT|NOFRAME, $16-96
@@ -170,14 +169,15 @@ encryptPartial:
 
 encryptDone:
 	// Finalize and write tag.
-	MOVQ additionalData+80(FP), R14
-	MOVQ plaintext+56(FP), R13
-	finalize(R15, R14, R13)
+	MOVQ    additionalData+80(FP), R14
+	MOVQ    plaintext+56(FP), R13
+	finalize(R14, R13)
+	VMOVDQU X0, (R15)
 
 	VZEROALL
 	RET
 
-// func openAVX2(constant, key, nonce *byte, dst, ciphertext, additionalData []byte, tag *byte)
+// func openAVX2(constant, key, nonce *byte, dst, ciphertext, additionalData []byte, tagOk *bool)
 TEXT ·openAVX2(SB), NOSPLIT|NOFRAME, $16-104
 	MOVQ SP, BP
 
@@ -226,6 +226,7 @@ decryptPartial:
 	VMOVDQU X6, (BP)
 	state_update(X6)
 	copy(R15, BP, R13)
+	ADDQ    R13, R14
 
 	// The state was updated with the encrypted padding, when it needs to be
 	// updated with the plaintext padding.  Fix up the state with an XOR.
@@ -238,11 +239,22 @@ decryptPartial:
 	VPXOR   X0, X6, X0
 
 decryptDone:
-	// Finalize and write tag.
+	// Finalize.
 	MOVQ additionalData+80(FP), R15
-	MOVQ tag+96(FP), R14
-	finalize(R14, R15, R12)
+	finalize(R15, R12)
 
+	// Compare tag.
+	//
+	// This use a subtle.ConstantTimeCompare, but this significantly improves
+	// performance, particularly for small messages.
+	VMOVDQU   (R14), X1
+	VPCMPEQD  X0, X1, X0
+	VPMOVMSKB X0, AX
+	CMPW      AX, $65535
+	JNE       outTag
+	MOVQ      tagOk+96(FP), R15
+	MOVB      $1, (R15)
+
+outTag:
 	VZEROALL
-	VMOVDQU X0, (BP) // Probably unneeded.
 	RET
